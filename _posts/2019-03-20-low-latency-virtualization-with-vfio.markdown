@@ -37,7 +37,61 @@ IOMMU Group 8 04:00.0 PCI bridge [0604]: Intel Corporation 82801 PCI Bridge [808
 IOMMU Group 9 00:1d.0 USB controller [0c03]: Intel Corporation 7 Series/C216 Chipset Family USB Enhanced Host Controller #1 [8086:1e26] (rev 04)
 ```
 
+## Checklist
+
+## Accessing the machine
+
+You will be yanking your GPU away from the Linux kernel if you follow this guide so make sure you can access the machine over SSH before doing anything or you're gonna be in for a bad time.
+
 ## On setting up the VM
+
+There's probably a thousand ways to start and manage a VM in Linux but probably the most popular method is libvirt and virsh. Libvirt provides a really nice abstraction layer on top of different virtualization technologies across different OSs, and virsh is quite a nice management shell that let's you manage the VMs on your system. For something like a VFIO-based virtual machine you will be doing tons and tons of tweaks around the underlying qmeu-kvm command that runs and shell wrappers around that command to optimize and tweak performance so it's almost certainly easiest to start by manually creating your virtual machine command in a simple shell script and then maybe once you get everything working try [converting the script to a libvirt XML domain](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/6/html/virtualization_administration_guide/sub-sect-domain_commands-converting_qemu_arguments_to_domain_xml). On my host machine right now this is literally just a [gigantic script](#boot-mediapc.sh) in `/root`, alongside an [on-boot script](#on-boot.sh). Don't jump ahead and try and use either of those though because there's a lot of explaining to do.
+
+## PCI datamining
+
+Run the [check-iommu](#check-iommu) script yourself and save all of the data. The IOMMU groups and the PCI identifiers will come in handy later. Additionally, collect a standard list of your PCI devices with `lspci -nn`. Save everything in a text file.
+
+## GPU selection
+
+There's two common methods here for how the guest gets a GPU - booting with a single GPU and handing it off, or booting with one GPU then handing off a second GPU to the guest. The first is harder and probably stupider but that's what I went with. The second is easier and more common because most Intel CPUs have an integrated GPU onboard that you can use for your Linux host.
+
+There's a bunch complications that arise from passing through a GPU that Linux used to boot. GPU drivers are pretty huge and complex and once attached to a device do *not* like being unbound. So one of the first things in the checklist should be telling your kernel on boot to bind a VFIO driver to the GPU instead of an actual one, and then on boot unbinding any virtual consoles or whatever from the GPU. Side note: You want to do all of the setup in the multiuser runlevel as opposed to the graphical login runlevel. On Debian this is set with:
+
+```bash
+systemctl set-default multi-user.target
+```
+
+## Boot configuration
+
+Now you want to do a couple things around Kernel parameters and modules. First, update your kernel parameters (in `/etc/default/grub`) to activate IOMMU partitioning for your system:
+
+```
+GRUB_CMDLINE_LINUX_DEFAULT="intel_iommu=on iommu=pt"
+```
+
+Now we want to tell the kernel to blacklist the nVidia drivers. Create the file `/etc/modprobe.d/blacklist-nvidia.conf`:
+
+```bash
+blacklist nouveau
+blacklist lbm-nouveau
+options nouveau modeset=0
+alias nouveau off
+alias lbm-nouveau off
+```
+
+Next we tell the kernel module `vfio-pci` which PCI devices to bind to on boot. Remember the giant list of PCI devices I told you to save? Find your GPU and it's associated audio device and use their vendor/device codes in a new file named `/etc/modprobe.conf/vfio.conf`:
+
+```bash
+options vfio-pci ids=10de:1b81,10de:10f0
+```
+
+Note these are the exact numbers from the `lspci -nn` output:
+
+```bash
+# lspci -nn | grep NVIDIA
+01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GP104 [GeForce GTX 1070] [10de:1b81] (rev a1)
+01:00.1 Audio device [0403]: NVIDIA Corporation GP104 High Definition Audio Controller [10de:10f0] (rev a1)
+```
 
 ## Machine configuration
 
@@ -52,6 +106,78 @@ IOMMU Group 9 00:1d.0 USB controller [0c03]: Intel Corporation 7 Series/C216 Chi
 ## Configuration files and options
 
 ## Scripts
+
+### boot-mediapc.sh
+
+```bash
+/usr/bin/chrt -r 1 \
+/usr/bin/taskset -ac 2,3 \
+/usr/bin/qemu-system-x86_64 \
+    -enable-kvm -m 8192 \
+    -machine q35,accel=kvm,vmport=off,dump-guest-core=off,kernel-irqchip=on \
+    -cpu host,kvm=off,hv_synic,hv_stimer,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time,hv_vendor_id=whatever \
+    -smp 2,sockets=1,cores=2,threads=1 \
+    -realtime mlock=on \
+    -pidfile /var/run/vm.mediapc.pid \
+    -drive file=/dev/vmpool/mediapc,format=raw \
+    -drive file=/dev/sda,format=raw \
+    -rtc base=localtime,driftfix=slew \
+    -no-hpet \
+    -global kvm-pit.lost_tick_policy=discard \
+    -global ICH9-LPC.disable_s3=1 \
+    -global ICH9-LPC.disable_s4=1 \
+    -device ioh3420,bus=pcie.0,addr=1c.0,multifunction=on,port=1,chassis=1,id=root.1 \
+    -device vfio-pci,host=01:00.0,bus=root.1,addr=00.0,x-pci-sub-vendor-id=4318,x-pci-sub-device-id=7041,x-vga=on,multifunction=true,romfile=/root/Asus.GTX1070.8192.161102-patched.rom \
+    -device vfio-pci,host=01:00.1,bus=root.1,addr=00.1 \
+    -device vfio-pci,host=00:1a.0,bus=root.1 \
+    -device vfio-pci,host=00:1d.0,bus=root.1 \
+    -device vfio-pci,host=00:14.0,bus=root.1 \
+    -device e1000,netdev=net0,mac=DE:AD:BE:EF:7A:A0 \
+    -netdev tap,id=net0,script=/root/qemu-ifup \
+    -no-user-config \
+    -nodefaults \
+    -display none \
+    -vga none \
+;
+```
+
+### on-boot.sh
+
+```
+#!/bin/bash
+
+echo 120 > /proc/sys/vm/stat_interval
+echo 0 > /proc/sys/kernel/watchdog
+echo 0 > /proc/sys/kernel/nmi_watchdog
+echo 3 > /sys/bus/workqueue/devices/writeback/cpumask # Set writeback threads to CPU0,1
+
+echo 0 > /sys/class/vtconsole/vtcon0/bind
+echo 0 > /sys/class/vtconsole/vtcon1/bind
+echo efi-framebuffer.0 > /sys/bus/platform/drivers/efi-framebuffer/unbind
+echo 1 > /sys/module/kvm/parameters/ignore_msrs
+sleep 1
+
+echo '0000:01:00.1' | sudo tee /sys/bus/pci/devices/0000:01:00.1/driver/unbind
+echo 10de 1b81 > /sys/bus/pci/drivers/vfio-pci/new_id
+echo 10de 10f0 > /sys/bus/pci/drivers/vfio-pci/new_id
+
+sleep 1
+echo 1 > /sys/bus/pci/rescan
+sleep 1
+
+# USB bus passthrough
+echo "8086 1e2d" > /sys/bus/pci/drivers/vfio-pci/new_id
+echo "0000:00:1a.0" > /sys/bus/pci/devices/0000:00:1a.0/driver/unbind
+echo "0000:00:1a.0" > /sys/bus/pci/drivers/vfio-pci/bind
+
+echo "8086 1e26" > /sys/bus/pci/drivers/vfio-pci/new_id
+echo "0000:00:1d.0" > /sys/bus/pci/devices/0000:00:1d.0/driver/unbind
+echo "0000:00:1d.0" > /sys/bus/pci/drivers/vfio-pci/bind
+
+echo "8086 1e31" > /sys/bus/pci/drivers/vfio-pci/new_id
+echo "0000:00:14.0" > /sys/bus/pci/devices/0000:00:14.0/driver/unbind
+echo "0000:00:14.0" > /sys/bus/pci/drivers/vfio-pci/bind
+```
 
 ### check-iommu
 
