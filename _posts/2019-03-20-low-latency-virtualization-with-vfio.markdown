@@ -41,14 +41,29 @@ IOMMU Group 9 00:1d.0 USB controller [0c03]: Intel Corporation 7 Series/C216 Chi
 
 ## Checklist
 
-Host configuration:
+Basic host configuration:
 
 - [ ] [Make sure you have non-local access to the machine](#Accessing the machine)
 - [ ] [Collect all relevant PCI information](#PCI datamining)
+- [ ] Configure the VM to run as non-root
+- [ ] Pass through GPU sub-identifiers into the VM so that nVidia drivers will install correctly
 
 Guest configuration:
 
 - [ ] Ensure that the nVidia control panel perfomance level is set to Maximum
+
+Critical performance checklist:
+
+- [ ] CPU isolation
+- [ ] USB controller passthrough
+- [ ] Set CPU scaling policy to max performance
+- [ ] Switch all Windows devices to use MSI (masked signal interrupts)
+
+Optional perfomance checlist:
+
+- [ ] Switch Windows guest disks over to virtualized IO device drivers
+- [ ] Configure IO threads for the guest
+- [ ] Switch the Windows guest network card to a virtualized device driver
 
 ## Accessing the machine
 
@@ -103,6 +118,27 @@ Note these are the exact numbers from the `lspci -nn` output:
 01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GP104 [GeForce GTX 1070] [10de:1b81] (rev a1)
 01:00.1 Audio device [0403]: NVIDIA Corporation GP104 High Definition Audio Controller [10de:10f0] (rev a1)
 ```
+
+Now is a pretty good time to set up your on-boot script. Literally nothing fancy here, we're not like deploying this to a datacenter or anything. Just create `/root/on-boot.sh`. There's an [example](#on-boot.sh) further down but start a little simple with simple ensuring that the virtual consoles get removed from the GPU and that the PCI device is re-mapped:
+
+```bash
+echo 0 > /sys/class/vtconsole/vtcon0/bind
+echo 0 > /sys/class/vtconsole/vtcon1/bind
+echo efi-framebuffer.0 > /sys/bus/platform/drivers/efi-framebuffer/unbind
+echo '0000:01:00.1' > /sys/bus/pci/devices/0000:01:00.1/driver/unbind
+echo 10de 1b81 > /sys/bus/pci/drivers/vfio-pci/new_id
+echo 10de 10f0 > /sys/bus/pci/drivers/vfio-pci/new_id
+```
+
+Set that file up to run on boot. You can do this in the root crontab easily. Open said file with `crontab -e` and add this single line:
+
+```
+@reboot /root/on-boot.sh
+```
+
+TODO: I'm not 100% sure the last two lines are necessary, will verify.
+
+That should be it - for now! Reboot, the first or (not) of many. Next boot you'll see the kernel messages fly everywhere (because we removed `quiet` from the kernel options) and then it'll look like it's frozen but at that point it's time to SSH in and do more stuff.
 
 ## Machine configuration
 
