@@ -5,6 +5,8 @@ date:   2019-03-20 23:15:31 -0400
 categories: linux virtualization
 ---
 
+*NOTE: This is a work-in progress, don't try following anything until this message is gone.*
+
 For a long the media PC in our house has just been a bog-standard Windows installation that performs pretty light duty but is always on. Windows is pretty good for a TV interface (high-DPI scaling and everything works quite well in Windows 10), it plays back every form of media you can imagine via Kodi and MPC-HC in a pinch, and it runs games.
 
 That being said when doing the whole media server part it wasn't really ideal as the large volume storage options leave a lot to be desired compared to ZFS and even really LVM, and there's a lot of things I'd like to use a Linux machine for that a Raspberry Pi (which I also use) won't cut it for. Basically don't ask me to justify this horror-show further than that.
@@ -38,6 +40,15 @@ IOMMU Group 9 00:1d.0 USB controller [0c03]: Intel Corporation 7 Series/C216 Chi
 ```
 
 ## Checklist
+
+Host configuration:
+
+- [ ] [Make sure you have non-local access to the machine](#Accessing the machine)
+- [ ] [Collect all relevant PCI information](#PCI datamining)
+
+Guest configuration:
+
+- [ ] Ensure that the nVidia control panel perfomance level is set to Maximum
 
 ## Accessing the machine
 
